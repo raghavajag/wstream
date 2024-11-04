@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"backend_task/internal/service/converter"
 	"log"
 	"net/http"
 	"sync"
@@ -45,4 +46,8 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		h.mutex.Unlock()
 		conn.Close()
 	}()
+	converter := converter.Converter{}
+	if err := converter.HandleConnection(conn); err != nil {
+		log.Printf("Error handling connection: %v", err)
+	}
 }

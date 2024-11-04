@@ -12,6 +12,12 @@ type Config struct {
 		Port    string
 		BaseURL string
 	}
+	Audio struct {
+		BufferSize    int
+		Channels      int
+		SampleRate    int
+		BitsPerSample int
+	}
 }
 
 // retrieves an environment variable with a default value
@@ -41,6 +47,10 @@ func Load() (*Config, error) {
 	config.Server.BaseURL = getEnv("BASE_URL", "http://localhost:8080")
 
 	// Audio configuration
+	config.Audio.BufferSize = getEnvAsInt("AUDIO_BUFFER_SIZE", 4096)
+	config.Audio.Channels = getEnvAsInt("AUDIO_CHANNELS", 2)
+	config.Audio.SampleRate = getEnvAsInt("AUDIO_SAMPLE_RATE", 44100)
+	config.Audio.BitsPerSample = getEnvAsInt("AUDIO_BITS_PER_SAMPLE", 16)
 
 	return config, nil
 }
