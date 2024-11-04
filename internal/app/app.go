@@ -2,6 +2,7 @@ package app
 
 import (
 	"backend_task/internal/config"
+	"backend_task/internal/handlers"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,6 +25,11 @@ func (a *App) Run() error {
 }
 
 func (a *App) setupRoutes() {
+	// WebSocket endpoint
+	wsHandler := handlers.NewWebSocketHandler()
+	a.router.GET("/ws", func(c *gin.Context) {
+		wsHandler.HandleWebSocket(c)
+	})
 	a.router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
