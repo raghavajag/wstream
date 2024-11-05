@@ -29,6 +29,13 @@ func New(cfg *config.Config) *App {
 }
 
 func (a *App) Run() error {
+	a.router.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "healthy",
+			"version": "1.0.0",
+		})
+	})
+
 	serverAddr := fmt.Sprintf(":%d", a.config.Port)
 	log.Printf("Starting server on %s", serverAddr)
 	return a.router.Run(serverAddr)

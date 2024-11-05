@@ -1,0 +1,29 @@
+services:
+  wav-to-flac-converter:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: wav-to-flac-converter:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - FFMPEG_PATH=/usr/bin/ffmpeg
+      - BUFFER_SIZE=1048576
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    restart: always
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - audio-converter-network
+
+networks:
+  audio-converter-network:
+    driver: bridge
