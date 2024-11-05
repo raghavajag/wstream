@@ -12,9 +12,8 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	app := app.New(cfg)
-	if err := app.Run(); err != nil {
+	application := app.New(cfg)
+	if err := application.Run(); err != nil {
 		log.Fatalf("Failed to run application: %v", err)
 	}
-
 }

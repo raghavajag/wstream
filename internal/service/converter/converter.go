@@ -6,17 +6,21 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
+	"os/exec"
+	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/mewkiz/flac"
-	"github.com/mewkiz/flac/frame"
-	"github.com/mewkiz/flac/meta"
 )
 
 type Converter struct {
 	config     *config.Config
 	bufferSize int
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	mutex      sync.Mutex
 }
 
 func NewConverter(cfg *config.Config) *Converter {
@@ -26,6 +30,55 @@ func NewConverter(cfg *config.Config) *Converter {
 	}
 }
 
+func (ac *Converter) StartFFmpeg(wavHeader models.WAVHeader) error {
+	ac.mutex.Lock()
+	defer ac.mutex.Unlock()
+
+	// Initialize ffmpeg command with WAV header parameters
+	ac.cmd = exec.Command(
+		"ffmpeg",
+		"-f", "wav",
+		"-i", "pipe:0", // Input from stdin
+		"-f", "flac",
+		"-compression_level", "8",
+		"pipe:1", // Output to stdout
+	)
+
+	// Set up pipes
+	var err error
+	ac.stdin, err = ac.cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	ac.stdout, err = ac.cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
+	// Optionally capture stderr for debugging
+	stderr, err := ac.cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	// Start the ffmpeg process
+	if err := ac.cmd.Start(); err != nil {
+		return err
+	}
+
+	// Log ffmpeg stderr
+	go func() {
+		buf := new(bytes.Buffer)
+		io.Copy(buf, stderr)
+		if buf.Len() > 0 {
+			log.Printf("ffmpeg stderr: %s", buf.String())
+		}
+	}()
+
+	return nil
+}
+
 func (ac *Converter) HandleConnection(conn *websocket.Conn) error {
 	buffer := bytes.NewBuffer(nil)
 	isHeaderRead := false
@@ -33,6 +86,28 @@ func (ac *Converter) HandleConnection(conn *websocket.Conn) error {
 	totalBytesProcessed := 0
 
 	log.Println("Starting WebSocket connection handling")
+
+	// Start a goroutine to read FLAC data from ffmpeg and send to WebSocket
+	flacSender := make(chan []byte)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(flacSender)
+		flacBuffer := make([]byte, 4096)
+		for {
+			n, err := ac.stdout.Read(flacBuffer)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("Error reading from ffmpeg stdout: %v", err)
+				}
+				break
+			}
+			flacData := make([]byte, n)
+			copy(flacData, flacBuffer[:n])
+			flacSender <- flacData
+		}
+		close(done)
+	}()
 
 	for {
 		messageType, data, err := conn.ReadMessage()
@@ -73,154 +148,49 @@ func (ac *Converter) HandleConnection(conn *websocket.Conn) error {
 
 			isHeaderRead = true
 			buffer.Next(binary.Size(wavHeader))
-		}
 
-		// Adjust buffer size dynamically
-		bytesPerSample := int(wavHeader.BitsPerSample / 8)
-		channelCount := int(wavHeader.NumChannels)
-		dynamicBufferSize := ac.bufferSize
-
-		// Ensure buffer size is a multiple of sample block size
-		sampleBlockSize := bytesPerSample * channelCount
-		if dynamicBufferSize%sampleBlockSize != 0 {
-			dynamicBufferSize = (dynamicBufferSize / sampleBlockSize) * sampleBlockSize
-		}
-
-		log.Printf("Dynamic buffer size: %d", dynamicBufferSize)
-		log.Printf("Sample block size: %d", sampleBlockSize)
-
-		// Audio data processing
-		if isHeaderRead && buffer.Len() >= dynamicBufferSize {
-			log.Printf("Preparing to process audio data")
-			log.Printf("Buffer size: %d, Required buffer size: %d", buffer.Len(), dynamicBufferSize)
-
-			audioData := make([]byte, dynamicBufferSize)
-			bytesRead, err := buffer.Read(audioData)
-			if err != nil {
-				log.Printf("Error reading audio data: %v", err)
+			// Start ffmpeg after reading header
+			if err := ac.StartFFmpeg(wavHeader); err != nil {
+				log.Printf("Error starting ffmpeg: %v", err)
 				return err
 			}
+		}
 
-			totalBytesProcessed += bytesRead
-			log.Printf("Read %d bytes of audio data", bytesRead)
+		// Send WAV data to ffmpeg's stdin
+		if isHeaderRead {
+			_, err := ac.stdin.Write(data)
+			if err != nil {
+				log.Printf("Error writing to ffmpeg stdin: %v", err)
+				return err
+			}
+			totalBytesProcessed += len(data)
 			log.Printf("Total bytes processed: %d", totalBytesProcessed)
-
-			flacData, err := ac.convertToFLAC(audioData, wavHeader)
-			if err != nil {
-				log.Printf("Error converting to FLAC: %v", err)
-				continue
-			}
-
-			log.Printf("Converted to FLAC. FLAC data length: %d bytes", len(flacData))
-
-			err = conn.WriteMessage(websocket.BinaryMessage, flacData)
-			if err != nil {
-				log.Printf("Error writing FLAC data: %v", err)
-				return err
-			}
-
-			log.Println("Successfully wrote FLAC data to WebSocket")
-		} else {
-			log.Printf("Not enough data to process. Header read: %v, Buffer size: %d, Required: %d",
-				isHeaderRead, buffer.Len(), dynamicBufferSize)
 		}
 
-		// handle remaining data or end of stream
-		if totalBytesProcessed > 1024*1024*5 { // Limit to 1MB for testing
+		// Send any available FLAC data to WebSocket
+		select {
+		case flacData, ok := <-flacSender:
+			if !ok {
+				// FLAC sender closed
+				return nil
+			}
+			if len(flacData) > 0 {
+				err := conn.WriteMessage(websocket.BinaryMessage, flacData)
+				if err != nil {
+					log.Printf("Error writing FLAC data to WebSocket: %v", err)
+					return err
+				}
+				log.Printf("Sent FLAC chunk of %d bytes to WebSocket", len(flacData))
+			}
+		default:
+			// No FLAC data available
+		}
+
+		if totalBytesProcessed > 1024*1024*50 { // 50MB
 			log.Println("Reached maximum processing limit")
 			break
 		}
 	}
 
 	return nil
-}
-func (ac *Converter) convertToFLAC(wavData []byte, header models.WAVHeader) ([]byte, error) {
-	log.Printf("Converting WAV to FLAC")
-	log.Printf("WAV Data length: %d bytes", len(wavData))
-	log.Printf("Channels: %d, Bits per sample: %d", header.NumChannels, header.BitsPerSample)
-
-	output := bytes.NewBuffer(nil)
-
-	// Detailed logging for sample calculations
-	bytesPerSample := int(header.BitsPerSample / 8)
-	totalSamples := len(wavData) / bytesPerSample
-	samplesPerChannel := totalSamples / int(header.NumChannels)
-
-	log.Printf("Bytes per sample: %d", bytesPerSample)
-	log.Printf("Total samples: %d", totalSamples)
-	log.Printf("Samples per channel: %d", samplesPerChannel)
-
-	streamInfo := meta.StreamInfo{
-		BlockSizeMin:  uint16(samplesPerChannel),
-		BlockSizeMax:  uint16(samplesPerChannel),
-		FrameSizeMin:  0,
-		FrameSizeMax:  0,
-		SampleRate:    header.SampleRate,
-		NChannels:     uint8(header.NumChannels),
-		BitsPerSample: uint8(header.BitsPerSample),
-	}
-
-	enc, err := flac.NewEncoder(output, &streamInfo)
-	if err != nil {
-		log.Printf("Error creating FLAC encoder: %v", err)
-		return nil, fmt.Errorf("error creating FLAC encoder: %v", err)
-	}
-	defer enc.Close()
-
-	// Samples conversion with extensive logging
-	samples := make([]int32, totalSamples)
-	if header.BitsPerSample == 16 {
-		for i := 0; i < totalSamples; i++ {
-			start := i * 2
-			end := start + 2
-			if end > len(wavData) {
-				log.Printf("Warning: Incomplete sample at index %d", i)
-				break
-			}
-			samples[i] = int32(int16(binary.LittleEndian.Uint16(wavData[start:end])))
-		}
-	} else {
-		log.Printf("Unsupported bits per sample: %d", header.BitsPerSample)
-		return nil, fmt.Errorf("unsupported bits per sample: %d", header.BitsPerSample)
-	}
-
-	// Frame and subframe creation with logging
-	frameHeader := frame.Header{
-		BlockSize:     uint16(samplesPerChannel),
-		SampleRate:    header.SampleRate,
-		Channels:      frame.Channels(header.NumChannels),
-		BitsPerSample: uint8(header.BitsPerSample),
-	}
-
-	subframes := make([]*frame.Subframe, header.NumChannels)
-	for ch := 0; ch < int(header.NumChannels); ch++ {
-		channelSamples := make([]int32, samplesPerChannel)
-		for i := 0; i < samplesPerChannel; i++ {
-			channelSamples[i] = samples[i*int(header.NumChannels)+ch]
-		}
-
-		log.Printf("Channel %d samples: %d", ch, len(channelSamples))
-
-		subframes[ch] = &frame.Subframe{
-			SubHeader: frame.SubHeader{
-				Pred:   frame.PredVerbatim,
-				Wasted: 0,
-				Order:  0,
-			},
-			Samples: channelSamples,
-		}
-	}
-
-	fr := frame.Frame{
-		Header:    frameHeader,
-		Subframes: subframes,
-	}
-
-	if err := enc.WriteFrame(&fr); err != nil {
-		log.Printf("Error writing FLAC frame: %v", err)
-		return nil, fmt.Errorf("error writing FLAC frame: %v", err)
-	}
-
-	log.Printf("Successfully converted to FLAC. Output size: %d bytes", output.Len())
-	return output.Bytes(), nil
 }

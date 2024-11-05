@@ -1,26 +1,36 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
-
-	"github.com/joho/godotenv"
 )
 
-type Config struct {
-	Server struct {
-		Port    string
-		BaseURL string
-	}
-	Audio struct {
-		BufferSize    int
-		Channels      int
-		SampleRate    int
-		BitsPerSample int
-	}
+type AudioConfig struct {
+	BufferSize int
+	FFmpegPath string
 }
 
-// retrieves an environment variable with a default value
+type Config struct {
+	Port  int
+	Audio AudioConfig
+}
+
+func Load() (*Config, error) {
+	port, err := strconv.Atoi(getEnv("PORT", "8080"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid PORT configuration: %v", err)
+	}
+
+	return &Config{
+		Port: port,
+		Audio: AudioConfig{
+			BufferSize: getEnvAsInt("BUFFER_SIZE", 1024*1024), // 1MB
+			FFmpegPath: getEnv("FFMPEG_PATH", "ffmpeg"),
+		},
+	}, nil
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -30,27 +40,9 @@ func getEnv(key, defaultValue string) string {
 
 func getEnvAsInt(key string, defaultValue int) int {
 	valueStr := os.Getenv(key)
-	if value, err := strconv.Atoi(valueStr); err == nil {
-		return value
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return defaultValue
 	}
-	return defaultValue
-}
-
-func Load() (*Config, error) {
-	// Load .env file if it exists
-	godotenv.Load()
-
-	config := &Config{}
-
-	// Server configuration
-	config.Server.Port = getEnv("SERVER_PORT", ":8080")
-	config.Server.BaseURL = getEnv("BASE_URL", "http://localhost:8080")
-
-	// Audio configuration
-	config.Audio.BufferSize = getEnvAsInt("AUDIO_BUFFER_SIZE", 4096)
-	config.Audio.Channels = getEnvAsInt("AUDIO_CHANNELS", 2)
-	config.Audio.SampleRate = getEnvAsInt("AUDIO_SAMPLE_RATE", 44100)
-	config.Audio.BitsPerSample = getEnvAsInt("AUDIO_BITS_PER_SAMPLE", 16)
-
-	return config, nil
+	return value
 }
