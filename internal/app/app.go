@@ -3,6 +3,7 @@ package app
 import (
 	"backend_task/internal/config"
 	"backend_task/internal/handlers"
+	"backend_task/internal/ui"
 	"fmt"
 	"log"
 
@@ -15,12 +16,17 @@ type App struct {
 }
 
 func New(cfg *config.Config) *App {
+	gin.SetMode(gin.ReleaseMode)
+
 	router := gin.New()
 	router.Use(gin.Recovery())
 
+	// Add WebSocket handler
 	wsHandler := handlers.NewWebSocketHandler(cfg)
-
 	router.GET("/ws", wsHandler.HandleWebSocket)
+
+	// Add UI routes
+	ui.AddRoutes(router)
 
 	return &App{
 		router: router,
@@ -29,13 +35,6 @@ func New(cfg *config.Config) *App {
 }
 
 func (a *App) Run() error {
-	a.router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "healthy",
-			"version": "1.0.0",
-		})
-	})
-
 	serverAddr := fmt.Sprintf(":%d", a.config.Port)
 	log.Printf("Starting server on %s", serverAddr)
 	return a.router.Run(serverAddr)

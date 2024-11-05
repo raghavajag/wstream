@@ -1,0 +1,27 @@
+body {
+  font-family: Arial, sans-serif;
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 20px;
+  text-align: center;
+}
+
+.container {
+  background-color: #f4f4f4;
+  padding: 20px;
+  border-radius: 8px;
+}
+
+.hidden {
+  display: none;
+}
+
+input,
+button {
+  margin: 10px 0;
+  padding: 10px;
+}
+
+progress {
+  width: 100%;
+}
