@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wav-to-flac-converter
+  labels:
+    app: wav-to-flac-converter
+spec:
+  replicas: 3 
+  selector:
+    matchLabels:
+      app: wav-to-flac-converter
+  template:
+    metadata:
+      labels:
+        app: wav-to-flac-converter
+    spec:
+      containers:
+      - name: wav-to-flac-converter
+        image: wav-to-flac-converter:latest
+        imagePullPolicy: Never  # Add this line for local images
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: FFMPEG_PATH
+          value: "/usr/bin/ffmpeg"
+        - name: BUFFER_SIZE
+          value: "1048576"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        # livenessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8080
+        #   initialDelaySeconds: 15
+        #   periodSeconds: 20
+        # readinessProbe:
+        #   httpGet:
+        #     path: /health
+        #     port: 8080
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 15
+

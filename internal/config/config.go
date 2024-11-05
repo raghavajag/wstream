@@ -26,7 +26,7 @@ func Load() (*Config, error) {
 		Port: port,
 		Audio: AudioConfig{
 			BufferSize: getEnvAsInt("BUFFER_SIZE", 1024*1024), // 1MB
-			FFmpegPath: getEnv("FFMPEG_PATH", "ffmpeg"),
+			FFmpegPath: getEnv("FFMPEG_PATH", "/usr/bin/ffmpeg"),
 		},
 	}, nil
 }

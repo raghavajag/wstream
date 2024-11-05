@@ -37,5 +37,7 @@ func New(cfg *config.Config) *App {
 func (a *App) Run() error {
 	serverAddr := fmt.Sprintf(":%d", a.config.Port)
 	log.Printf("Starting server on %s", serverAddr)
+	// to ensure Gin binds to all interfaces
+	a.router.SetTrustedProxies(nil)
 	return a.router.Run(serverAddr)
 }
