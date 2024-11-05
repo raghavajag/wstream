@@ -1,45 +1,64 @@
 package converter
 
 import (
+	"backend_task/internal/config"
+	"backend_task/internal/domain/models"
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"log"
 
 	"github.com/gorilla/websocket"
 )
 
-type Converter struct{}
-
-func New() *Converter {
-	return &Converter{}
+type Converter struct {
+	config     *config.Config
+	bufferSize int
 }
 
-func (c *Converter) HandleConnection(conn *websocket.Conn) error {
-	defer conn.Close()
-
-	// Send a welcome message
-	if err := conn.WriteMessage(websocket.TextMessage, []byte("Connected to WebSocket server")); err != nil {
-		log.Printf("Error sending welcome message: %v", err)
-		return err
+func NewConverter(cfg *config.Config) *Converter {
+	return &Converter{
+		config:     cfg,
+		bufferSize: cfg.Audio.BufferSize,
 	}
+}
+
+func (ac *Converter) HandleConnection(conn *websocket.Conn) error {
+	buffer := bytes.NewBuffer(nil)
+	isHeaderRead := false
+	var wavHeader models.WAVHeader
 
 	for {
-		// Read message from the client
-		messageType, message, err := conn.ReadMessage()
+		messageType, data, err := conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Error reading message: %v", err)
-			}
-			break
-		}
-
-		// Log the received message
-		log.Printf("Received message: %s", message)
-
-		// Echo the message back to the client
-		if err := conn.WriteMessage(messageType, message); err != nil {
-			log.Printf("Error writing message: %v", err)
+			log.Printf("Error reading WebSocket message: %v", err)
 			return err
 		}
-	}
 
-	return nil
+		if messageType != websocket.BinaryMessage {
+			log.Default().Println("Not a binary message")
+			continue
+		}
+		log.Default().Println("Received binary message")
+		buffer.Write(data)
+
+		if !isHeaderRead && buffer.Len() >= binary.Size(wavHeader) {
+			err := binary.Read(bytes.NewReader(buffer.Bytes()), binary.LittleEndian, &wavHeader)
+			fmt.Printf("WAV Header: %v\n", wavHeader)
+
+			if err != nil {
+				log.Printf("Error reading WAV header: %v", err)
+				return err
+			}
+			isHeaderRead = true
+
+			if string(wavHeader.ChunkID[:]) != "RIFF" || string(wavHeader.Format[:]) != "WAVE" {
+				log.Printf("Invalid WAV format")
+				return err
+			}
+
+			buffer.Next(binary.Size(wavHeader))
+		}
+
+	}
 }
