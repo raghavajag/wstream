@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"backend_task/internal/config"
 	"backend_task/internal/service/converter"
 	"log"
 	"net/http"
@@ -14,9 +15,10 @@ type WebSocketHandler struct {
 	upgrader websocket.Upgrader
 	clients  map[*websocket.Conn]bool
 	mutex    sync.Mutex
+	config   *config.Config
 }
 
-func NewWebSocketHandler() *WebSocketHandler {
+func NewWebSocketHandler(cfg *config.Config) *WebSocketHandler {
 	return &WebSocketHandler{
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -26,6 +28,7 @@ func NewWebSocketHandler() *WebSocketHandler {
 			},
 		},
 		clients: make(map[*websocket.Conn]bool),
+		config:  cfg,
 	}
 }
 
@@ -46,7 +49,7 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		h.mutex.Unlock()
 		conn.Close()
 	}()
-	converter := converter.Converter{}
+	converter := converter.NewConverter(h.config)
 	if err := converter.HandleConnection(conn); err != nil {
 		log.Printf("Error handling connection: %v", err)
 	}

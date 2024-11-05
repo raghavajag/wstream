@@ -26,7 +26,7 @@ func (a *App) Run() error {
 
 func (a *App) setupRoutes() {
 	// WebSocket endpoint
-	wsHandler := handlers.NewWebSocketHandler()
+	wsHandler := handlers.NewWebSocketHandler(a.config)
 	a.router.GET("/ws", func(c *gin.Context) {
 		wsHandler.HandleWebSocket(c)
 	})
