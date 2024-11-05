@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"backend_task/internal/config"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
@@ -32,75 +34,108 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "WebSocket upgrade failed"})
 		return
 	}
 	defer conn.Close()
 
-	// Create FFmpeg command for WAV to FLAC conversion
+	// Create buffered channels for data flow control
+	inputChan := make(chan []byte, 1024)
+	errorChan := make(chan error, 1)
+	doneChan := make(chan struct{})
+
+	// Create FFmpeg command with optimized parameters
 	ffmpegCmd := exec.Command(h.config.Audio.FFmpegPath,
-		"-f", "wav", // Input format
-		"-i", "pipe:0", // Read from stdin
-		"-f", "flac", // Output format
-		"-c:a", "flac", // FLAC codec
-		"-compression_level", "5", // Compression level
-		"pipe:1", // Write to stdout
+		"-f", "wav",
+		"-i", "pipe:0",
+		"-c:a", "aac", // Use AAC codec for better compatibility
+		"-b:a", "192k",
+		"-f", "mp4",
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-frag_duration", "1000", // Fragment duration in milliseconds
+		"pipe:1",
 	)
 
-	// Create pipes for communication
-	stdinPipe, err := ffmpegCmd.StdinPipe()
+	// Set up pipes with error handling
+	stdin, err := ffmpegCmd.StdinPipe()
 	if err != nil {
-		log.Printf("Error creating stdin pipe: %v", err)
+		log.Printf("Failed to create stdin pipe: %v", err)
 		return
 	}
 
-	stdoutPipe, err := ffmpegCmd.StdoutPipe()
+	stdout, err := ffmpegCmd.StdoutPipe()
 	if err != nil {
-		log.Printf("Error creating stdout pipe: %v", err)
+		log.Printf("Failed to create stdout pipe: %v", err)
 		return
 	}
 
+	// Start FFmpeg with error handling
 	if err := ffmpegCmd.Start(); err != nil {
 		log.Printf("Failed to start FFmpeg: %v", err)
 		return
 	}
 
-	// Goroutine to read FLAC output and send via WebSocket
-	doneChan := make(chan struct{})
+	// Goroutine for handling FFmpeg output
 	go func() {
 		defer close(doneChan)
-		defer ffmpegCmd.Process.Kill()
-
 		buffer := make([]byte, h.config.Audio.BufferSize)
+
 		for {
-			n, err := stdoutPipe.Read(buffer)
+			n, err := stdout.Read(buffer)
 			if err != nil {
-				log.Printf("Error reading FFmpeg output: %v", err)
+				if err != io.EOF {
+					errorChan <- fmt.Errorf("FFmpeg output error: %v", err)
+				}
 				return
 			}
 
+			// Send converted data through WebSocket with error handling
 			if err := conn.WriteMessage(websocket.BinaryMessage, buffer[:n]); err != nil {
-				log.Printf("WebSocket write error: %v", err)
+				errorChan <- fmt.Errorf("WebSocket write error: %v", err)
 				return
 			}
 		}
 	}()
 
-	// Process incoming WAV chunks
-	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("WebSocket read error: %v", err)
-			break
-		}
+	// Goroutine for handling input data
+	go func() {
+		defer stdin.Close()
 
-		// Write WAV chunk to FFmpeg stdin
-		if _, err := stdinPipe.Write(data); err != nil {
-			log.Printf("Error writing to FFmpeg stdin: %v", err)
-			break
+		for data := range inputChan {
+			_, err := stdin.Write(data)
+			if err != nil {
+				errorChan <- fmt.Errorf("FFmpeg input error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Main loop for handling WebSocket messages
+	for {
+		select {
+		case err := <-errorChan:
+			log.Printf("Error in processing: %v", err)
+			return
+		case <-doneChan:
+			return
+		default:
+			messageType, data, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("WebSocket error: %v", err)
+				}
+				return
+			}
+
+			if messageType != websocket.BinaryMessage {
+				continue
+			}
+
+			// Non-blocking send to input channel
+			select {
+			case inputChan <- data:
+			default:
+				log.Println("Input buffer full, dropping frame")
+			}
 		}
 	}
-
-	// Wait for output processing to complete
-	<-doneChan
 }

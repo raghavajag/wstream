@@ -80,6 +80,9 @@ func (ac *Converter) StartFFmpeg(wavHeader models.WAVHeader) error {
 }
 
 func (ac *Converter) HandleConnection(conn *websocket.Conn) error {
+	// Receives WAV chunks via WebSocket
+	// Processes them through FFmpeg
+	// Streams FLAC output back
 	buffer := bytes.NewBuffer(nil)
 	isHeaderRead := false
 	var wavHeader models.WAVHeader
