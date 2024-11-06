@@ -43,5 +43,5 @@ choco install ffmpeg
 ```bash
 go run cmd/main.go
 ```
-# Access the web interface at http://localhost
+# Access the web interface at http://localhost/static
 ```
