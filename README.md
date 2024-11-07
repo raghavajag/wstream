@@ -1,7 +1,7 @@
 # WAV to FLAC Streaming Converter Service
 
 A real-time audio streaming service that converts WAV files to FLAC format using WebSocket communication. Built with Go, featuring an embedded web UI and containerized deployment support.
-
+# Access the web interface at [link](http://4.240.97.177/static/)
 ## Features
 
 - Real-time WAV to FLAC streaming conversion
@@ -42,6 +42,4 @@ choco install ffmpeg
 3. Run the service
 ```bash
 go run cmd/main.go
-```
-# Access the web interface at [http://localhost/static](http://4.240.97.177/static/)
 ```
