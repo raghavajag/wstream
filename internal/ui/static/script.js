@@ -6,194 +6,155 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressText = document.getElementById('progressText');
   const audioPlayer = document.createElement('audio');
   audioPlayer.controls = true;
+  document.body.appendChild(audioPlayer);
 
+  let mediaSource;
+  let sourceBuffer;
   let ws = null;
-  let mediaSource = null;
-  let sourceBuffer = null;
-  let isSourceBufferActive = false;
+  let chunks = [];
+  let isPlaying = false;
 
-  // Using more compatible codec
-  const mimeType = 'audio/mp4; codecs="mp4a.40.2"'; // AAC codec
+  const initializeMediaSource = () => {
+    mediaSource = new MediaSource();
+    audioPlayer.src = URL.createObjectURL(mediaSource);
 
-  convertBtn.addEventListener('click', async () => {
-    const file = fileInput.files[0];
-    if (!file) {
-      alert('Please select a WAV file');
-      return;
-    }
+    mediaSource.addEventListener('sourceopen', () => {
+      try {
+        sourceBuffer = mediaSource.addSourceBuffer('audio/mp4; codecs="mp4a.40.2"');
 
-    // Reset previous state
-    if (mediaSource) {
-      if (sourceBuffer) {
-        try {
-          mediaSource.removeSourceBuffer(sourceBuffer);
-        } catch (e) {
-          console.log('Error removing source buffer:', e);
-        }
+        sourceBuffer.addEventListener('updateend', () => {
+          if (chunks.length > 0 && !sourceBuffer.updating) {
+            sourceBuffer.appendBuffer(chunks.shift());
+          }
+        });
+
+        sourceBuffer.addEventListener('error', (e) => {
+          console.error('SourceBuffer error:', e);
+        });
+      } catch (e) {
+        console.error('Exception while adding source buffer:', e);
       }
-      mediaSource = null;
-      sourceBuffer = null;
-    }
+    });
 
-    // Reset UI
-    progressContainer.classList.remove('hidden');
-    progressBar.value = 0;
-    progressText.textContent = '0%';
+    mediaSource.addEventListener('error', (e) => {
+      console.error('MediaSource error:', e);
+    });
+  };
 
+  const handleStreamData = (data) => {
     try {
-      // Initialize new MediaSource
-      mediaSource = new MediaSource();
-      audioPlayer.src = URL.createObjectURL(mediaSource);
-      document.body.appendChild(audioPlayer);
-
-      mediaSource.addEventListener('sourceopen', setupSourceBuffer);
-      mediaSource.addEventListener('sourceended', cleanupSourceBuffer);
-      mediaSource.addEventListener('sourceclose', cleanupSourceBuffer);
-
-    } catch (error) {
-      console.error('Error initializing MediaSource:', error);
-      alert('Error initializing audio player');
-    }
-  });
-
-  function setupSourceBuffer() {
-    if (!mediaSource || mediaSource.readyState !== 'open') {
-      return;
-    }
-
-    try {
-      sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-      isSourceBufferActive = true;
-
-      sourceBuffer.addEventListener('updateend', () => {
-        if (sourceBuffer && !sourceBuffer.updating) {
-          updateProgress();
+      const arrayBuffer = data instanceof ArrayBuffer ? data : data.buffer;
+      if (sourceBuffer && !sourceBuffer.updating) {
+        sourceBuffer.appendBuffer(arrayBuffer);
+        isPlaying = true;
+        if (audioPlayer.paused) {
+          audioPlayer.play().catch(console.error);
         }
-      });
-
-      // Initialize WebSocket after source buffer is ready
-      initializeWebSocket();
-
+      } else {
+        chunks.push(arrayBuffer);
+      }
+      updateProgress();
     } catch (error) {
-      console.error('Error setting up SourceBuffer:', error);
-      cleanupSourceBuffer();
+      console.error('Error handling stream data:', error);
     }
-  }
+  };
 
-  function initializeWebSocket() {
-    ws = new WebSocket(`ws://${window.location.host}/ws`);
+  const initializeWebSocket = () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-      console.log('WebSocket connection opened');
-      const file = fileInput.files[0];
-      if (file) {
-        sendFileInChunks(file);
-      }
+      console.log('WebSocket connection established');
     };
 
-    let queue = [];
     ws.onmessage = (event) => {
-      if (!isSourceBufferActive || !sourceBuffer) {
-        return;
-      }
-
-      try {
-        if (sourceBuffer.updating) {
-          queue.push(event.data);
-        } else {
-          appendData(event.data);
-          while (queue.length > 0 && !sourceBuffer.updating) {
-            appendData(queue.shift());
-          }
-        }
-      } catch (error) {
-        console.error('Error handling message:', error);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket connection closed');
-      if (mediaSource && mediaSource.readyState === 'open') {
-        mediaSource.endOfStream();
-      }
+      handleStreamData(event.data);
     };
 
     ws.onerror = (error) => {
       console.error('WebSocket error:', error);
-      cleanupSourceBuffer();
     };
-  }
 
-  function appendData(data) {
-    if (!sourceBuffer || !isSourceBufferActive) {
-      return;
-    }
-
-    try {
-      sourceBuffer.appendBuffer(data);
-    } catch (error) {
-      console.error('Error appending buffer:', error);
-      if (error.name === 'InvalidStateError') {
-        cleanupSourceBuffer();
+    ws.onclose = () => {
+      console.log('WebSocket connection closed');
+      if (mediaSource.readyState === 'open') {
+        mediaSource.endOfStream();
       }
-    }
-  }
+    };
+  };
 
-  function updateProgress() {
-    if (!sourceBuffer || !isSourceBufferActive) {
-      return;
-    }
-
-    try {
-      if (sourceBuffer.buffered.length > 0 && audioPlayer.duration) {
-        const progress = (sourceBuffer.buffered.end(0) / audioPlayer.duration) * 100;
-        progressBar.value = Math.min(100, progress);
-        progressText.textContent = `${Math.min(100, Math.round(progress))}%`;
-      }
-    } catch (error) {
-      console.error('Error updating progress:', error);
-    }
-  }
-
-  function cleanupSourceBuffer() {
-    isSourceBufferActive = false;
-    if (mediaSource && sourceBuffer) {
-      try {
-        mediaSource.removeSourceBuffer(sourceBuffer);
-      } catch (e) {
-        console.log('Error removing source buffer:', e);
-      }
-    }
-    sourceBuffer = null;
-  }
-
-  function sendFileInChunks(file) {
+  const sendFileInChunks = (file) => {
     const chunkSize = 64 * 1024; // 64KB chunks
     let offset = 0;
 
-    function readNextChunk() {
-      if (!isSourceBufferActive) {
-        return;
-      }
-
-      const slice = file.slice(offset, offset + chunkSize);
+    const readAndSendChunk = () => {
       const reader = new FileReader();
-
       reader.onload = (e) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(e.target.result);
           offset += e.target.result.byteLength;
 
           if (offset < file.size) {
-            readNextChunk();
+            readAndSendChunk();
+          } else {
+            console.log('File transmission completed');
           }
         }
       };
 
+      const slice = file.slice(offset, offset + chunkSize);
       reader.readAsArrayBuffer(slice);
+    };
+
+    readAndSendChunk();
+  };
+
+  const updateProgress = () => {
+    if (audioPlayer.duration) {
+      const progress = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+      progressBar.value = progress;
+      progressText.textContent = `${Math.round(progress)}%`;
+    }
+  };
+
+  convertBtn.addEventListener('click', () => {
+    const file = fileInput.files[0];
+    if (!file) {
+      alert('Please select a WAV file');
+      return;
     }
 
-    readNextChunk();
-  }
+    // Reset state
+    chunks = [];
+    isPlaying = false;
+    if (audioPlayer.src) {
+      URL.revokeObjectURL(audioPlayer.src);
+      audioPlayer.src = '';
+    }
+
+    // Show progress
+    progressContainer.classList.remove('hidden');
+    progressBar.value = 0;
+    progressText.textContent = '0%';
+
+    // Initialize streaming
+    initializeMediaSource();
+    initializeWebSocket();
+
+    // Start sending file when WebSocket is ready
+    ws.addEventListener('open', () => {
+      sendFileInChunks(file);
+    });
+  });
+
+  // Add audio player time update listener for progress
+  audioPlayer.addEventListener('timeupdate', updateProgress);
+
+  // Handle audio errors
+  audioPlayer.addEventListener('error', (e) => {
+    console.error('Audio playback error:', e);
+  });
 });
